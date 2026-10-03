@@ -18,6 +18,9 @@ type Request struct {
 	LocalPort int
 	// PodPort is the target port for the reverse proxy
 	RemotePort int
+	// Listener is an optional listener, already bound to LocalPort, that the
+	// reverse proxy will serve on instead of binding LocalPort itself.
+	Listener net.Listener
 	// RemoteIP is the target ip for the reverse proxy
 	RemoteIP string
 	// StopCh is the channel used to manage the reverse proxy lifecycle
@@ -41,9 +44,12 @@ func Proxy(req Request) error {
 	// fixes liquibase read-timeouts whe using quarkus + postgres + liquibase.
 	waitUntilRemoteAcceptsConnection(remote, initialConnectTimeOut)
 
-	listener, err := net.Listen("tcp", local)
-	if err != nil {
-		return err
+	listener := req.Listener
+	if listener == nil {
+		var err error
+		if listener, err = net.Listen("tcp", local); err != nil {
+			return err
+		}
 	}
 
 	done := false

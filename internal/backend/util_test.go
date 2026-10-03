@@ -1,6 +1,8 @@
 package backend
 
 import (
+	"fmt"
+	"net"
 	"testing"
 
 	"github.com/joyrex2001/kubedock/internal/model/types"
@@ -194,5 +196,35 @@ func TestMapContainerTCPPortsIdempotency(t *testing.T) {
 			t.Errorf("port mapping changed: expected %d->%d, got %d->%d",
 				k, v, k, container.MappedPorts[k])
 		}
+	}
+}
+
+func TestMapContainerTCPPortsHoldsPortsUntilReleased(t *testing.T) {
+	// The mapped port has to stay bound between mapping and the reverse proxy
+	// listening on it; a port released in between can be handed to the next
+	// container by the kernel, and one of the two proxies then fails to bind.
+	kub := &instance{}
+	c := &types.Container{ExposedPorts: map[string]interface{}{
+		"4433/tcp": 0,
+		"4434/tcp": 0,
+	}}
+	if err := kub.MapContainerTCPPorts(c); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	for port := range c.MappedPorts {
+		if l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port)); err == nil {
+			l.Close()
+			t.Errorf("mapped port %d is not held after mapping", port)
+		}
+	}
+
+	c.ReleaseReservedPorts()
+	for port := range c.MappedPorts {
+		l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
+		if err != nil {
+			t.Errorf("mapped port %d is still held after release: %s", port, err)
+			continue
+		}
+		l.Close()
 	}
 }

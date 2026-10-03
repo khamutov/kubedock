@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -48,6 +49,11 @@ type Container struct {
 	OpenStdin      bool
 	Created        time.Time
 	Finished       time.Time
+
+	// reservedPorts keeps each randomly mapped host port bound from the moment
+	// it is picked until a reverse proxy takes it over. A port released in
+	// between can be handed to another container by the kernel.
+	reservedPorts map[int]net.Listener
 }
 
 // PreArchive contains the path and contents of archives (tar) that need to be
@@ -296,6 +302,33 @@ func (co *Container) MapPort(pod, local int) {
 		co.MappedPorts = map[int]int{}
 	}
 	co.MappedPorts[pod] = local
+}
+
+// ReservePort will keep the given listener, bound to the given host port,
+// open until a reverse proxy takes it with TakeReservedPort, or until
+// ReleaseReservedPorts closes it.
+func (co *Container) ReservePort(local int, l net.Listener) {
+	if co.reservedPorts == nil {
+		co.reservedPorts = map[int]net.Listener{}
+	}
+	co.reservedPorts[local] = l
+}
+
+// TakeReservedPort will return the listener reserved for given host port and
+// hand over its ownership to the caller, or nil if the port is not reserved.
+func (co *Container) TakeReservedPort(local int) net.Listener {
+	l := co.reservedPorts[local]
+	delete(co.reservedPorts, local)
+	return l
+}
+
+// ReleaseReservedPorts will close the listeners of all reserved ports that
+// have not been taken.
+func (co *Container) ReleaseReservedPorts() {
+	for local, l := range co.reservedPorts {
+		l.Close()
+		delete(co.reservedPorts, local)
+	}
 }
 
 // AddHostPort will add a predefined port mapping.

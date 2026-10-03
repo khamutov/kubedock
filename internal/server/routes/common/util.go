@@ -12,6 +12,8 @@ import (
 // StartContainer will start given container and saves the appropriate state
 // in the database.
 func StartContainer(cr *ContextRouter, tainr *types.Container) error {
+	// Closes the mapped ports no reverse proxy took over.
+	defer tainr.ReleaseReservedPorts()
 	state, err := cr.Backend.StartContainer(tainr)
 	if err != nil {
 		return err
@@ -19,6 +21,8 @@ func StartContainer(cr *ContextRouter, tainr *types.Container) error {
 
 	tainr.HostIP = "0.0.0.0"
 	if cr.Config.PortForward {
+		// Port-forwards bind the mapped ports themselves.
+		tainr.ReleaseReservedPorts()
 		cr.Backend.CreatePortForwards(tainr)
 	} else {
 		if len(tainr.GetServicePorts()) > 0 {

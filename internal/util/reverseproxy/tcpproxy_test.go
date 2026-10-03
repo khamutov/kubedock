@@ -189,3 +189,43 @@ func TestProxyIPv6Normal(t *testing.T) {
 	stopP <- struct{}{}
 	stopS <- struct{}{}
 }
+
+func TestProxyGivenListener(t *testing.T) {
+	l, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("unexpected error reserving a port: %s", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+
+	stopP := make(chan struct{}, 1)
+	req := Request{
+		LocalPort:  port,
+		Listener:   l,
+		RemoteIP:   "127.0.0.1",
+		RemotePort: 30691,
+		StopCh:     stopP,
+		MaxRetry:   2,
+	}
+
+	stopS := make(chan struct{}, 1)
+	go func() {
+		if err := helloServer("127.0.0.1", 30691, stopS); err != nil {
+			t.Errorf("unexpected error running helloServer: %s", err)
+		}
+	}()
+
+	if err := Proxy(req); err != nil {
+		t.Errorf("unexpected error starting proxy on a given listener: %s", err)
+	}
+
+	res, err := callServer("127.0.0.1", port)
+	if err != nil {
+		t.Errorf("unexpected error calling helloServer via proxy: %s", err)
+	}
+	if res != "Hello!\n" {
+		t.Errorf("unexpected answer calling helloServer via proxy: %s", res)
+	}
+
+	stopP <- struct{}{}
+	stopS <- struct{}{}
+}

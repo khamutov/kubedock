@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path"
 	"regexp"
@@ -247,14 +248,16 @@ func (in *instance) reverseProxy(tainr *types.Container, ports map[int]int) {
 		if src < 0 {
 			continue
 		}
+		listener := tainr.TakeReservedPort(src)
 		wg.Add(1)
-		go func(src, dst int) {
+		go func(src, dst int, listener net.Listener) {
 			defer wg.Done()
 			klog.Infof("reverse proxy for %d to %d", src, dst)
 			stop := make(chan struct{}, 1)
 			tainr.AddStopChannel(stop)
 			err := reverseproxy.Proxy(reverseproxy.Request{
 				LocalPort:  src,
+				Listener:   listener,
 				RemotePort: dst,
 				RemoteIP:   tainr.HostIP,
 				StopCh:     stop,
@@ -263,7 +266,7 @@ func (in *instance) reverseProxy(tainr *types.Container, ports map[int]int) {
 			if err != nil {
 				klog.Errorf("error setting up reverse-proxy for %d to %d: %s", src, dst, err)
 			}
-		}(src, dst)
+		}(src, dst, listener)
 	}
 	wg.Wait()
 }

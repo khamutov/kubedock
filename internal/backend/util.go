@@ -53,7 +53,8 @@ func (in *instance) readFile(file string) ([]byte, error) {
 }
 
 // MapContainerTCPPorts will map random available ports to the ports
-// in the container.
+// in the container. Each port stays bound, reserved on the container, until
+// a reverse proxy takes it over or ReleaseReservedPorts is called.
 func (in *instance) MapContainerTCPPorts(tainr *types.Container) error {
 OUTER:
 	for _, pp := range tainr.GetContainerTCPPorts() {
@@ -77,8 +78,9 @@ OUTER:
 		if err != nil {
 			return err
 		}
-		tainr.MapPort(l.Addr().(*net.TCPAddr).Port, pp)
-		defer l.Close()
+		port := l.Addr().(*net.TCPAddr).Port
+		tainr.MapPort(port, pp)
+		tainr.ReservePort(port, l)
 	}
 	return nil
 }
