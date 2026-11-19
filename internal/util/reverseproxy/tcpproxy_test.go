@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -188,4 +189,111 @@ func TestProxyIPv6Normal(t *testing.T) {
 
 	stopP <- struct{}{}
 	stopS <- struct{}{}
+}
+
+func proxiedConn(t *testing.T) (client, upstream *net.TCPConn, done <-chan struct{}) {
+	t.Helper()
+	ul, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("unexpected error listening for upstream: %s", err)
+	}
+	defer ul.Close()
+	pl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("unexpected error listening for proxy: %s", err)
+	}
+	defer pl.Close()
+
+	c, err := net.Dial("tcp", pl.Addr().String())
+	if err != nil {
+		t.Fatalf("unexpected error dialing proxy: %s", err)
+	}
+	p, err := pl.Accept()
+	if err != nil {
+		t.Fatalf("unexpected error accepting client: %s", err)
+	}
+	ch := make(chan struct{})
+	go func() {
+		handleConnection(p, pl.Addr().String(), ul.Addr().String(), 1)
+		close(ch)
+	}()
+	u, err := ul.Accept()
+	if err != nil {
+		t.Fatalf("unexpected error accepting proxied connection: %s", err)
+	}
+	t.Cleanup(func() {
+		c.Close()
+		u.Close()
+	})
+	return c.(*net.TCPConn), u.(*net.TCPConn), ch
+}
+
+func readAll(conn net.Conn) (string, error) {
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	b, err := io.ReadAll(conn)
+	return string(b), err
+}
+
+func TestHandleConnectionClose(t *testing.T) {
+	tests := []struct {
+		name     string
+		exchange func(t *testing.T, client, upstream *net.TCPConn)
+	}{
+		{
+			name: "client close reaches upstream",
+			exchange: func(t *testing.T, client, upstream *net.TCPConn) {
+				client.Close()
+				if _, err := readAll(upstream); err != nil {
+					t.Errorf("expected upstream to read EOF after client close, but got: %s", err)
+					return
+				}
+				upstream.Close()
+			},
+		},
+		{
+			name: "client half-close still gets the reply",
+			exchange: func(t *testing.T, client, upstream *net.TCPConn) {
+				client.Write([]byte("ping"))
+				client.CloseWrite()
+				if req, err := readAll(upstream); req != "ping" || err != nil {
+					t.Errorf("expected upstream to read \"ping\" and EOF, but got: %q, %v", req, err)
+					return
+				}
+				upstream.Write([]byte("pong"))
+				upstream.Close()
+				if res, err := readAll(client); res != "pong" || err != nil {
+					t.Errorf("expected client to read \"pong\" and EOF, but got: %q, %v", res, err)
+				}
+			},
+		},
+		{
+			name: "upstream close reaches client",
+			exchange: func(t *testing.T, client, upstream *net.TCPConn) {
+				upstream.Close()
+				if _, err := readAll(client); err != nil {
+					t.Errorf("expected client to read EOF after upstream close, but got: %s", err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			goroutines := runtime.NumGoroutine()
+			client, upstream, done := proxiedConn(t)
+			tt.exchange(t, client, upstream)
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("expected handleConnection to return")
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for runtime.NumGoroutine() > goroutines {
+				if time.Now().After(deadline) {
+					t.Fatalf("expected %d goroutines after the connection closed, but got %d", goroutines, runtime.NumGoroutine())
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
 }

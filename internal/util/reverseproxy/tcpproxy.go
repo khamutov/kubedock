@@ -90,7 +90,11 @@ func handleConnection(conn net.Conn, local, remote string, maxRetry int) {
 		conn2, err = net.DialTimeout("tcp", remote, time.Second/retryRate)
 		if err == nil {
 			klog.V(3).Infof("handling connection for %s", local)
-			go io.Copy(conn2, conn)
+			go func() {
+				io.Copy(conn2, conn)
+				// Half-close, so the remote sees EOF and can still reply.
+				conn2.(*net.TCPConn).CloseWrite()
+			}()
 			io.Copy(conn, conn2)
 			conn2.Close()
 			conn.Close()
